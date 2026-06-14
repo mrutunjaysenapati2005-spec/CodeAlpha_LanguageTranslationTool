@@ -47,7 +47,11 @@
     .result-box { margin-top: 16px; display: none; }
     .result-box.visible { display: block; }
     .result-text { background: var(--bg); border: 1px solid var(--accent); border-radius: 10px;
-      padding: 14px; font-size: 15px; line-height: 1.7; min-height: 80px; color: var(--text); word-break: break-word; }
+      padding: 14px; font-size: 15px; line-height: 1.7; min-height: 60px; color: var(--text); word-break: break-word; }
+    .extra-box { background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px 14px; font-size: 13px; line-height: 1.6; color: var(--muted); margin-top: 10px; display: none; }
+    .extra-box.visible { display: block; }
+    .extra-box b { color: var(--text); }
     .action-row { display: flex; gap: 8px; margin-top: 10px; }
     .icon-btn { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
       background: var(--border); border: none; color: var(--text); padding: 10px; border-radius: 8px;
@@ -70,9 +74,9 @@
 </head>
 <body>
 <header>
-  <div class="badge">Code Alpha Task 1 </div>
+  <div class="badge">CodeAlpha · Task 1</div>
   <h1>Language Translator</h1>
-  <p class="subtitle">Mrutunjaya welcomes you to this AI Translation tool· </p>
+  <p class="subtitle">Mrutunjaya welcomes you to this translation tool 🌐</p>
 </header>
 
 <div class="card">
@@ -121,7 +125,7 @@
   </div>
 
   <label for="inputText">Enter Text</label>
-  <textarea id="inputText" rows="4" placeholder="Type your text here…" maxlength="500" oninput="updateCount()"></textarea>
+  <textarea id="inputText" rows="4" placeholder="Type a word, phrase, idiom, or sentence…" maxlength="500" oninput="updateCount()"></textarea>
   <div class="char-count"><span id="charCount">0</span> / 500</div>
 
   <button class="translate-btn" id="translateBtn" onclick="doTranslate()">⚡ Translate</button>
@@ -131,6 +135,9 @@
   <div class="result-box" id="resultBox">
     <label style="margin:0 0 6px">Translation</label>
     <div class="result-text" id="resultText"></div>
+
+    <div class="extra-box" id="extraBox"></div>
+
     <div class="action-row">
       <button class="icon-btn" onclick="copyText()">📋 Copy</button>
       <button class="icon-btn" onclick="speakText()">🔊 Listen</button>
@@ -166,18 +173,48 @@ async function doTranslate() {
 
   clearError();
   document.getElementById('resultBox').classList.remove('visible');
+  document.getElementById('extraBox').classList.remove('visible');
   document.getElementById('translateBtn').disabled = true;
   document.getElementById('status').innerHTML = '<span class="spinner"></span> Translating…';
 
+  // dt=t  -> main translation
+  // dt=bd -> dictionary / alternate meanings (for single words)
+  // dt=rm -> transliteration / romanization (pronunciation guide)
+  const ggUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${src}&tl=${tgt}&dt=t&dt=bd&dt=rm&q=${encodeURIComponent(text)}`;
+
   const attempts = [
+    () => fetch(ggUrl).then(r => r.json()).then(d => {
+      if (!d || !d[0] || !d[0].length) throw new Error('bad');
+
+      // Main translated sentence (joins all chunks)
+      const translated = d[0].map(x => x[0]).filter(Boolean).join('');
+      if (!translated || translated.trim().toLowerCase() === text.trim().toLowerCase()) {
+        throw new Error('bad');
+      }
+
+      // Transliteration / pronunciation (how it sounds)
+      let translit = '';
+      d[0].forEach(chunk => { if (chunk[2]) translit += chunk[2]; });
+
+      // Dictionary alternate meanings (only present for single words)
+      let altMeanings = [];
+      if (d[1] && Array.isArray(d[1])) {
+        d[1].forEach(pos => {
+          if (pos[1] && pos[1].length) {
+            altMeanings.push({ partOfSpeech: pos[0], words: pos[1].slice(0, 5) });
+          }
+        });
+      }
+
+      return { translated, translit, altMeanings };
+    }),
+
+    // Backup: MyMemory (basic translation only)
     () => fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${src}|${tgt}`)
             .then(r => r.json()).then(d => {
-              if(d.responseStatus===200 && d.responseData.translatedText) return d.responseData.translatedText;
-              throw new Error('bad');
-            }),
-    () => fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=${src}&tl=${tgt}&dt=t&q=${encodeURIComponent(text)}`)
-            .then(r => r.json()).then(d => {
-              if(d && d[0]) return d[0].map(x=>x[0]).filter(Boolean).join('');
+              if (d.responseStatus === 200 && d.responseData.translatedText) {
+                return { translated: d.responseData.translatedText, translit: '', altMeanings: [] };
+              }
               throw new Error('bad');
             }),
   ];
@@ -186,16 +223,37 @@ async function doTranslate() {
     try {
       const result = await Promise.race([
         attempts[i](),
-        new Promise((_,r) => setTimeout(() => r(new Error('timeout')), 9000))
+        new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 9000))
       ]);
-      if (result) {
-        document.getElementById('resultText').textContent = result;
+
+      if (result && result.translated) {
+        document.getElementById('resultText').textContent = result.translated;
         document.getElementById('resultBox').classList.add('visible');
+
+        // Build extra info box (pronunciation + meanings)
+        let extraHTML = '';
+        if (result.translit) {
+          extraHTML += `<b>Pronunciation:</b> ${result.translit}<br>`;
+        }
+        if (result.altMeanings && result.altMeanings.length) {
+          extraHTML += `<b>Other meanings:</b><br>`;
+          result.altMeanings.forEach(pos => {
+            extraHTML += `&nbsp;&nbsp;<i>${pos.partOfSpeech}</i>: ${pos.words.join(', ')}<br>`;
+          });
+        }
+        const extraBox = document.getElementById('extraBox');
+        if (extraHTML) {
+          extraBox.innerHTML = extraHTML;
+          extraBox.classList.add('visible');
+        } else {
+          extraBox.classList.remove('visible');
+        }
+
         document.getElementById('status').textContent = '✓ Translation complete';
         document.getElementById('translateBtn').disabled = false;
         return;
       }
-    } catch(e) {
+    } catch (e) {
       console.log('attempt', i, 'failed:', e.message);
     }
   }
@@ -247,6 +305,8 @@ function speakText() {
 function clearAll() {
   document.getElementById('inputText').value = '';
   document.getElementById('resultText').textContent = '';
+  document.getElementById('extraBox').textContent = '';
+  document.getElementById('extraBox').classList.remove('visible');
   document.getElementById('resultBox').classList.remove('visible');
   document.getElementById('charCount').textContent = '0';
   document.getElementById('status').textContent = '';
@@ -255,4 +315,3 @@ function clearAll() {
 </script>
 </body>
 </html>
-
